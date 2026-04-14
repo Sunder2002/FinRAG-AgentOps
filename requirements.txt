@@ -1,0 +1,24 @@
+# Framework
+fastapi
+uvicorn[standard]
+pydantic>=2.7.0
+pydantic-settings
+python-dotenv
+
+# Async & Task Queue
+celery
+redis
+
+# AI & Vector DB
+langchain
+langchain-community
+langgraph
+qdrant-client
+sentence-transformers
+langchain-google-genai
+groq
+
+# Utilities
+httpx
+python-multipart
+loguru
