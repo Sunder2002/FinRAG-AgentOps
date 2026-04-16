@@ -1,138 +1,86 @@
 ﻿import asyncio
-import httpx
 import yfinance as yf
-from typing import List, Dict, Any, Optional
-from src.core.config import logger, settings
+from typing import List, Dict, Any
+from src.core.config import logger
 from src.services.base import BaseAuditDataSource
-
-class SECRateLimitError(Exception):
-    pass
 
 class UnifiedMarketDataService(BaseAuditDataSource):
     """
-    Enterprise Data Router. 
-    Dynamically routes US tickers to the SEC EDGAR API, 
-    and International/Indian tickers (.NS, .BO) to Yahoo Finance.
+    Enterprise Data Ingestion Layer.
+    Pulls deep, pre-cleaned financial metrics required for comprehensive auditing.
     """
-    def __init__(self) -> None:
-        # --- SEC EDGAR Configuration ---
-        self.headers: Dict[str, str] = {
-            "User-Agent": settings.SEC_USER_AGENT,
-            "Accept-Encoding": "gzip, deflate"
-        }
-        self.tickers_url: str = "https://www.sec.gov/files/company_tickers.json"
-        self.base_submissions_url: str = "https://data.sec.gov/submissions/CIK"
-        self._client_timeout: float = 15.0
-        self._rate_limit: asyncio.Semaphore = asyncio.Semaphore(10)
-
-    # ==========================================
-    # ROUTE 1: US GOVERNMENT SEC EDGAR LOGIC
-    # ==========================================
-    async def _get_cik(self, client: httpx.AsyncClient, ticker: str) -> Optional[str]:
-        logger.info(f"Resolving CIK for ticker: {ticker}")
-        response = await client.get(self.tickers_url)
-        response.raise_for_status()
-
-        data: Dict[str, Any] = response.json()
-        for item in data.values():
-            if item.get("ticker") == ticker.upper():
-                return str(item.get("cik_str")).zfill(10)
-        return None
-
-    async def _fetch_sec_data(self, ticker: str, limit: int) -> List[Dict[str, Any]]:
-        async with httpx.AsyncClient(headers=self.headers, timeout=self._client_timeout, http2=True) as client:
-            try:
-                async with self._rate_limit:
-                    cik: Optional[str] = await self._get_cik(client, ticker)
-                    if not cik:
-                        logger.warning(f"Ticker {ticker} not found in SEC database.")
-                        return []
-
-                    logger.info(f"Resolved {ticker} to CIK: {cik}. Fetching submissions...")
-                    await asyncio.sleep(0.15) # Politeness delay for SEC limits
-
-                    submission_url = f"{self.base_submissions_url}{cik}.json"
-                    response = await client.get(submission_url)
-
-                    if response.status_code == 429:
-                        raise SECRateLimitError("SEC Rate Limit Exceeded.")
-                    response.raise_for_status()
-
-                    data: Dict[str, Any] = response.json()
-                    recent_filings: Dict[str, list] = data.get("filings", {}).get("recent", {})
-
-                    if not recent_filings:
-                        return []
-
-                    documents: List[Dict[str, Any]] = []
-                    for i in range(min(limit, len(recent_filings.get("accessionNumber", [])))):
-                        form: str = recent_filings["form"][i]
-                        date: str = recent_filings["filingDate"][i]
-                        desc: str = recent_filings["primaryDocDescription"][i]
-                        
-                        content_str = (
-                            f"ENTITY: {data.get('name', ticker)}\n"
-                            f"FORM TYPE: {form}\n"
-                            f"FILING DATE: {date}\n"
-                            f"DESCRIPTION: {desc}\n"
-                            f"SEC RECORD: The entity officially filed a {form} document on {date}."
-                        )
-
-                        documents.append({
-                            "content": content_str,
-                            "metadata": {"ticker": ticker.upper(), "cik": cik, "form": form, "filing_date": date}
-                        })
-                    return documents
-            except Exception as e:
-                logger.error(f"Error in SEC fetch for {ticker}: {str(e)}")
-                raise
-
-    # ==========================================
-    # ROUTE 2: GLOBAL/INDIAN MARKET LOGIC
-    # ==========================================
-    async def _fetch_global_data(self, ticker: str) -> List[Dict[str, Any]]:
+    
+    async def _fetch_deep_financials(self, ticker: str) -> List[Dict[str, Any]]:
+        logger.info(f"📊 Pulling deep financial profile for {ticker}...")
         try:
-            # yfinance is synchronous, so we wrap it to keep the async loop healthy
+            # Run blocking yfinance calls in a background thread to keep async fast
             stock = yf.Ticker(ticker)
-            income_stmt = await asyncio.to_thread(lambda: stock.income_stmt)
+            info = await asyncio.to_thread(lambda: stock.info)
             
-            if income_stmt is None or income_stmt.empty:
-                logger.warning(f"No financial data found for {ticker}.")
+            if not info or 'shortName' not in info:
+                logger.warning(f"No financial profile found for {ticker}.")
                 return []
 
-            latest_date = income_stmt.columns[0]
-            latest_data = income_stmt[latest_date]
+            # 1. Top-Line
+            total_revenue = info.get('totalRevenue', 'DATA UNAVAILABLE')
+            rev_growth = info.get('revenueGrowth', 'DATA UNAVAILABLE')
             
-            total_revenue = latest_data.get("Total Revenue", "N/A")
-            net_income = latest_data.get("Net Income", "N/A")
+            # 2. Profitability
+            net_income = info.get('netIncomeToCommon', 'DATA UNAVAILABLE')
+            gross_margin = info.get('grossMargins', 'DATA UNAVAILABLE')
+            op_margin = info.get('operatingMargins', 'DATA UNAVAILABLE')
+            
+            # 3. Liquidity
+            total_cash = info.get('totalCash', 'DATA UNAVAILABLE')
+            total_debt = info.get('totalDebt', 'DATA UNAVAILABLE')
+            current_ratio = info.get('currentRatio', 'DATA UNAVAILABLE')
+            
+            # 4. Valuation
+            market_cap = info.get('marketCap', 'DATA UNAVAILABLE')
+            pe_ratio = info.get('trailingPE', 'DATA UNAVAILABLE')
+            beta = info.get('beta', 'DATA UNAVAILABLE')
 
+            # Build a structured, hyper-dense context string for the AI Analyst
             content_str = (
-                f"ENTITY: {ticker}\n"
-                f"REPORTING DATE: {latest_date.strftime('%Y-%m-%d')}\n"
-                f"SOURCE: Audited Income Statement\n"
-                f"--- FINANCIAL METRICS ---\n"
+                f"ENTITY: {info.get('shortName', ticker)} ({ticker})\n"
+                f"SECTOR: {info.get('sector', 'N/A')} | INDUSTRY: {info.get('industry', 'N/A')}\n"
+                f"===================================\n"
+                f"1. TOP-LINE PERFORMANCE\n"
                 f"Total Revenue: {total_revenue}\n"
+                f"Revenue Growth (YoY): {rev_growth}\n"
+                f"-----------------------------------\n"
+                f"2. PROFITABILITY\n"
                 f"Net Income: {net_income}\n"
-                f"-------------------------\n"
+                f"Gross Margin: {gross_margin}\n"
+                f"Operating Margin: {op_margin}\n"
+                f"-----------------------------------\n"
+                f"3. LIQUIDITY & BALANCE SHEET\n"
+                f"Total Cash: {total_cash}\n"
+                f"Total Debt: {total_debt}\n"
+                f"Current Ratio: {current_ratio}\n"
+                f"-----------------------------------\n"
+                f"4. MARKET VALUATION\n"
+                f"Market Cap: {market_cap}\n"
+                f"P/E Ratio: {pe_ratio}\n"
+                f"Beta (Volatility): {beta}\n"
+                f"===================================\n"
+                f"COMPANY SUMMARY: {info.get('longBusinessSummary', 'N/A')[:1000]}..." # Truncated to save tokens
             )
 
-            documents = [{"content": content_str, "metadata": {"ticker": ticker.upper(), "date": str(latest_date)}}]
+            documents = [{
+                "content": content_str, 
+                "metadata": {"ticker": ticker.upper(), "type": "Deep_Financial_Profile"}
+            }]
+            
             return documents
+            
         except Exception as e:
             logger.error(f"Error fetching global market data for {ticker}: {str(e)}")
             raise
 
-    # ==========================================
-    # THE ROUTER (Strategy Pattern)
-    # ==========================================
     async def fetch_documents(self, ticker: str, limit: int = 1) -> List[Dict[str, Any]]:
-        """Determines which data source to use based on the ticker format."""
-        if ticker.endswith('.NS') or ticker.endswith('.BO'):
-            logger.info(f"🌐 [ROUTER] Indian Ticker detected. Routing to Global Finance API...")
-            return await self._fetch_global_data(ticker)
-        else:
-            logger.info(f"🏛️ [ROUTER] US Ticker detected. Routing to Government SEC API...")
-            return await self._fetch_sec_data(ticker, limit)
+        """Unified router. Feeds clean data for all tickers to the LangGraph agents."""
+        return await self._fetch_deep_financials(ticker)
 
-# Export as sec_service so main.py and celery_worker.py don't break
+# Export singleton
 sec_service = UnifiedMarketDataService()

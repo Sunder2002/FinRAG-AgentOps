@@ -1,3 +1,6 @@
+# Tell pip to use the CPU-only registry for PyTorch to save ~2.5GB of disk space
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # Framework
 fastapi
 uvicorn[standard]
@@ -9,9 +12,10 @@ python-dotenv
 celery
 redis
 
-# AI & Vector DB
+# AI & Vector DB 
 langchain
 langchain-community
+langchain-huggingface
 langgraph
 qdrant-client
 sentence-transformers
@@ -22,7 +26,4 @@ groq
 httpx
 python-multipart
 loguru
-
 yfinance
-httpx
-faiss-cpu
