@@ -22,3 +22,7 @@ groq
 httpx
 python-multipart
 loguru
+
+yfinance
+httpx
+faiss-cpu

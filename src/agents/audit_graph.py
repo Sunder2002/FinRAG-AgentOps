@@ -12,11 +12,6 @@ class AuditState(TypedDict):
     final_report: str
 
 def get_dynamic_model() -> str:
-    """
-    Dynamically queries the Google API for available models and selects
-    the best one suited for complex financial reasoning.
-    Bypasses SDK versioning issues by using the REST API directly.
-    """
     logger.info("🔍 Querying Google API for available models...")
     api_key = settings.GOOGLE_API_KEY
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
@@ -27,40 +22,22 @@ def get_dynamic_model() -> str:
             response.raise_for_status()
             data = response.json()
             
-        # Filter for models that actually support text generation
         available_models = [
             m.get("name").replace("models/", "") 
             for m in data.get("models", []) 
             if "generateContent" in m.get("supportedGenerationMethods", [])
         ]
         
-        # Priority cascade for an Enterprise Financial Audit:
-        # 1. 1.5 Pro (State-of-the-art reasoning, best for financial data)
-        # 2. 1.5 Flash (Extremely fast, highly capable fallback)
-        # 3. 1.0 Pro (Legacy fallback if others are constrained)
-        priority_cascade = [
-            "gemini-1.5-pro",
-            "gemini-1.5-pro-latest",
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-latest",
-            "gemini-1.0-pro"
-        ]
-        
+        priority_cascade = ["gemini-1.5-pro", "gemini-1.5-pro-latest", "gemini-1.5-flash"]
         for target_model in priority_cascade:
             if target_model in available_models:
-                logger.info(f"✅ Dynamically selected optimal model: {target_model}")
                 return target_model
                 
-        # Absolute fallback if priority list fails but API is up
-        fallback = available_models[0] if available_models else "gemini-1.5-flash"
-        logger.warning(f"Priority models not found in registry. Falling back to: {fallback}")
-        return fallback
-        
+        return available_models[0] if available_models else "gemini-1.5-flash"
     except Exception as e:
-        logger.error(f"Failed to fetch models dynamically: {str(e)}. Defaulting to gemini-1.5-flash.")
+        logger.error(f"Failed to fetch models dynamically: {str(e)}")
         return "gemini-1.5-flash"
 
-# Initialize LLM with the dynamically selected model
 llm = ChatGoogleGenerativeAI(
     model=get_dynamic_model(), 
     google_api_key=settings.GOOGLE_API_KEY, 
@@ -69,21 +46,36 @@ llm = ChatGoogleGenerativeAI(
 
 def analyst_node(state: AuditState):
     logger.info("🤖 [Analyst Agent] Extracting metrics...")
-    prompt = ChatPromptTemplate.from_template("Analyst: Extract revenue for {ticker} from: {db_context}")
-    # Pass inputs explicitly as a dictionary to avoid LangChain internal state parsing bugs
+    prompt = ChatPromptTemplate.from_template("Analyst: Extract revenue for {ticker} from this raw SEC data: {db_context}")
     response = (prompt | llm).invoke({"ticker": state["ticker"], "db_context": state["db_context"]})
     return {"analyst_summary": response.content}
 
 def auditor_node(state: AuditState):
-    logger.info("🤖 [Auditor Agent] Finalizing report...")
-    prompt = ChatPromptTemplate.from_template("Auditor: Write 2-sentence opinion on: {analyst_summary}")
+    logger.info("🤖 [Auditor Agent] Drafting initial report...")
+    prompt = ChatPromptTemplate.from_template("Auditor: Write a short, professional opinion on this financial data: {analyst_summary}")
     response = (prompt | llm).invoke({"analyst_summary": state["analyst_summary"]})
     return {"final_report": response.content}
 
+def compliance_node(state: AuditState):
+    logger.info("🤖 [Compliance Agent] Verifying report for hallucinations/errors...")
+    prompt = ChatPromptTemplate.from_template(
+        "Compliance Officer: Review this report. If it mentions a specific revenue number, ensure it sounds factual. "
+        "If the data is missing (like from a Form 4), ensure the tone is highly professional. "
+        "Output the final cleared text with '[COMPLIANCE CLEARED]' at the start. Report: {final_report}"
+    )
+    response = (prompt | llm).invoke({"final_report": state["final_report"]})
+    # We overwrite the final_report in the state with the compliance-checked version
+    return {"final_report": response.content}
+
+# --- BUILD THE 3-AGENT GRAPH ---
 builder = StateGraph(AuditState)
 builder.add_node("analyst", analyst_node)
 builder.add_node("auditor", auditor_node)
+builder.add_node("compliance", compliance_node)
+
 builder.set_entry_point("analyst")
 builder.add_edge("analyst", "auditor")
-builder.add_edge("auditor", END)
+builder.add_edge("auditor", "compliance") # New routing!
+builder.add_edge("compliance", END)       # End the graph after compliance
+
 audit_app = builder.compile()

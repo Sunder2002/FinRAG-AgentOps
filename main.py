@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import settings, logger
 from contextlib import asynccontextmanager
@@ -46,7 +47,8 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    return {"message": "Enterprise Financial Audit System API"}
+    """Automatically redirect the base URL to the API Dashboard."""
+    return RedirectResponse(url="/docs")
 
 # --- ENTERPRISE AUDIT ENDPOINTS ---
 
